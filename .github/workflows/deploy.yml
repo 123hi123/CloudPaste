@@ -11,15 +11,16 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
       
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '21'
+          node-version: '21' # 使用符合 wrangler 要求的 Node.js 版本
       
-      - name: Install wrangler
-        run: npm install -g wrangler
+      - name: Install Wrangler CLI
+        run: npm install -g wrangler # 全域安裝 wrangler，讓後續步驟可以直接使用
       
       - name: Check and Create KV Namespace
         env:
@@ -27,51 +28,48 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           wrangler telemetry disable
-          # 检查 PASTE_STORE
+          # 檢查 PASTE_STORE
           KV_NAMESPACE="PASTE_STORE"
-          echo "Checking for KV namespace: $KV_NAMESPACE"
+          echo "Checking for KV namespace: cloudpaste-$KV_NAMESPACE"
           LIST_OUTPUT=$(wrangler kv namespace list)
-          echo "KV namespace list output: $LIST_OUTPUT"
           
           KV_ID=$(echo "$LIST_OUTPUT" | jq -r '.[] | select(.title == "cloudpaste-'$KV_NAMESPACE'") | .id')
           
           if [ -z "$KV_ID" ]; then
-              echo "KV namespace $KV_NAMESPACE does not exist. Creating..."
-              CREATE_OUTPUT=$(wrangler kv namespace create "$KV_NAMESPACE")
-              echo "Create KV namespace output: $CREATE_OUTPUT"
-              KV_ID=$(echo "$CREATE_OUTPUT" | sed -n 's/.*id = "\([^"]*\)".*/\1/p')
+              echo "KV namespace cloudpaste-$KV_NAMESPACE does not exist. Creating..."
+              # 【修正】建立時的名稱要與檢查時的名稱 "cloudpaste-..." 一致
+              CREATE_OUTPUT=$(wrangler kv namespace create "cloudpaste-$KV_NAMESPACE")
+              KV_ID=$(echo "$CREATE_OUTPUT" | jq -r '.id')
               
               if [ -z "$KV_ID" ]; then
-                  echo "Failed to extract KV ID. Full output: $CREATE_OUTPUT"
-                  exit 1
+                echo "Failed to extract KV ID from create output."
+                exit 1
               fi
-              
-              echo "KV namespace $KV_NAMESPACE created successfully with ID: $KV_ID"
+              echo "KV namespace cloudpaste-$KV_NAMESPACE created successfully with ID: $KV_ID"
           else
-            echo "KV namespace $KV_NAMESPACE already exists with ID: $KV_ID"
+              echo "KV namespace cloudpaste-$KV_NAMESPACE already exists with ID: $KV_ID"
           fi
           echo "PASTE_STORE_ID=$KV_ID" >> $GITHUB_ENV
           
-          # 检查 UPLOAD_STATUS
+          # 檢查 UPLOAD_STATUS
           KV_NAMESPACE="UPLOAD_STATUS"
-          echo "Checking for KV namespace: $KV_NAMESPACE"
+          echo "Checking for KV namespace: cloudpaste-$KV_NAMESPACE"
           
           KV_ID=$(echo "$LIST_OUTPUT" | jq -r '.[] | select(.title == "cloudpaste-'$KV_NAMESPACE'") | .id')
           
           if [ -z "$KV_ID" ]; then
-              echo "KV namespace $KV_NAMESPACE does not exist. Creating..."
-              CREATE_OUTPUT=$(wrangler kv namespace create "$KV_NAMESPACE")
-              echo "Create KV namespace output: $CREATE_OUTPUT"
-              KV_ID=$(echo "$CREATE_OUTPUT" | sed -n 's/.*id = "\([^"]*\)".*/\1/p')
-              
+              echo "KV namespace cloudpaste-$KV_NAMESPACE does not exist. Creating..."
+              # 【修正】建立時的名稱要與檢查時的名稱 "cloudpaste-..." 一致
+              CREATE_OUTPUT=$(wrangler kv namespace create "cloudpaste-$KV_NAMESPACE")
+              KV_ID=$(echo "$CREATE_OUTPUT" | jq -r '.id')
+
               if [ -z "$KV_ID" ]; then
-                  echo "Failed to extract KV ID. Full output: $CREATE_OUTPUT"
-                  exit 1
+                echo "Failed to extract KV ID from create output."
+                exit 1
               fi
-              
-              echo "KV namespace $KV_NAMESPACE created successfully with ID: $KV_ID"
+              echo "KV namespace cloudpaste-$KV_NAMESPACE created successfully with ID: $KV_ID"
           else
-            echo "KV namespace $KV_NAMESPACE already exists with ID: $KV_ID"
+              echo "KV namespace cloudpaste-$KV_NAMESPACE already exists with ID: $KV_ID"
           fi
           echo "UPLOAD_STATUS_ID=$KV_ID" >> $GITHUB_ENV
           
@@ -81,44 +79,33 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           R2_BUCKET="cloudpaste-files"
-          R2_BINDING="FILE_STORE"
           echo "Checking for R2 bucket: $R2_BUCKET"
           
-          # List buckets and check if our bucket exists
           BUCKET_LIST=$(wrangler r2 bucket list)
           BUCKET_EXISTS=$(echo "$BUCKET_LIST" | grep -w "$R2_BUCKET" || true)
           
           if [ -z "$BUCKET_EXISTS" ]; then
               echo "R2 bucket $R2_BUCKET does not exist. Creating..."
-              CREATE_OUTPUT=$(wrangler r2 bucket create "$R2_BUCKET" --location apac)
+              wrangler r2 bucket create "$R2_BUCKET"
               echo "R2 bucket $R2_BUCKET created successfully"
           else
               echo "R2 bucket $R2_BUCKET already exists"
           fi
 
-      - name: Update wrangler.toml
+      - name: Update wrangler.toml with KV IDs
         run: |
-          # Read the entire content of wrangler.toml
-          WRANGLER_CONTENT=$(cat wrangler.toml)
-          
-          # Update both KV namespace IDs
-          UPDATED_CONTENT=$(echo "$WRANGLER_CONTENT" | \
-            sed -e "s/id = \"temporary-id-12345\"/id = \"$PASTE_STORE_ID\"/" \
-            -e "s/id = \"temporary-id-67890\"/id = \"$UPLOAD_STATUS_ID\"/")
-          
-          # Write the updated content back to wrangler.toml
-          echo "$UPDATED_CONTENT" > wrangler.toml
+          # 將 wrangler.toml 中的 placeholder ID 替換為實際的 KV ID
+          sed -i "s/id = \"temporary-id-12345\"/id = \"$PASTE_STORE_ID\"/" wrangler.toml
+          sed -i "s/id = \"temporary-id-67890\"/id = \"$UPLOAD_STATUS_ID\"/" wrangler.toml
           
           echo "Updated wrangler.toml content:"
           cat wrangler.toml
           
+      # --- 【核心修正】 ---
+      # 捨棄舊的、會產生衝突的 cloudflare/wrangler-action
+      # 直接使用上面步驟安裝好的 wrangler 來執行部署指令
       - name: Deploy to Cloudflare Workers
-        uses: cloudflare/wrangler-action@2.0.0
-        with:
-          apiToken: ${{ secrets.CF_API_TOKEN }}
-          command: deploy --var ADMIN_USERNAME:${{ secrets.ADMIN_USERNAME }} --var ADMIN_PASSWORD:${{ secrets.ADMIN_PASSWORD }}
+        run: wrangler deploy --var ADMIN_USERNAME:${{ secrets.ADMIN_USERNAME }} --var ADMIN_PASSWORD:${{ secrets.ADMIN_PASSWORD }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
